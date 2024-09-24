@@ -1,0 +1,36 @@
+local CollectionService = game:GetService("CollectionService")
+
+local AttackingModule = require(script.attacking)
+
+local folder = workspace["Attackers"]
+
+local function update()
+	-- creates a table conisting of every attack mob
+	local attackers = CollectionService:GetTagged("attacker")
+	
+	for _, attacker in ipairs(attackers) do
+		--[[ a duplicate for respawn purpose is inside serverstorage 
+		and to prevent errors the duplicate will be discarded from the logic ]]
+		if attacker.Parent ~= folder then continue end
+		
+		-- allows the ai initiating his attack only once per trigger
+		local debounce = false
+		
+		attacker.Trigger.Touched:Connect(function(hit)
+			--  if the hit object belongs to an instance different from the player instance then the attacker won't initiate an attack
+			if not game.Players:GetPlayerFromCharacter(hit.Parent) then return end
+			
+			if debounce then return end
+			debounce = true
+			print("started")
+			local resetDebounce = AttackingModule.initiate(attacker)
+			-- once the player gets out of reach the debounce will be reset and the ai can attack a new target
+			
+			if resetDebounce then debounce = false end
+		end)
+	end
+end
+
+update()
+
+folder.ChildAdded:Connect(update)
