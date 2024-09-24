@@ -1,0 +1,46 @@
+local ServerStorage = game:GetService("ServerStorage")
+
+local inobs = workspace["Inobs"]
+local animals = workspace["Animals"]
+local attackers = workspace["Attackers"]
+
+-- respawns cooldown for each instance type
+local cooldown = {
+	Tree = 2,
+	Rock = 5,
+	
+	Pig = 10,
+	
+	Bandit = 7
+}
+
+-- parent of instance after respawn
+local types = {
+	inob = workspace.Inobs,
+	animal = workspace.Animals,
+	attacker = workspace.Attackers,
+}
+
+local function respawn(child : Part)
+	local insType : string = child:GetTags()[1] -- instance type
+	local parent = types[insType] -- parent of the instance
+
+	local cframe = child:GetAttribute("RespawnCFrame") -- respawn position
+	local instance = child.Name
+	
+	task.wait(cooldown[instance]) -- respawn cooldown
+	
+	local resInstance : Part = ServerStorage["Obs"][instance]:Clone() -- cloned instance
+	-- spawns the instance clone differently depending on if it's a model or a part
+	if resInstance:IsA("Model") then
+		resInstance.PrimaryPart.CFrame = cframe
+	else
+		resInstance.CFrame = cframe
+	end
+	resInstance.Parent = parent
+end
+
+-- when an interactable object (tree, rock) or a mob (pig, bandit) gets destroyed or killed, they will respawn with a cooldown
+inobs.ChildRemoved:Connect(respawn)
+animals.ChildRemoved:Connect(respawn)
+attackers.ChildRemoved:Connect(respawn)
