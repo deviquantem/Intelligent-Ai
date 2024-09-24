@@ -1,0 +1,291 @@
+local module = {}
+
+local PathfindingService = game:GetService("PathfindingService")
+
+local attacker
+local humanoid
+local animator
+local rootPart
+local hitbox
+
+local walk
+local run
+
+local punches
+
+-- information for intelligent path computation
+local path = PathfindingService:CreatePath({
+	AgentRadius = 2,
+	AgentHeight = 5,
+})
+
+-- params that disallow attackers to combat each other
+local overlapParams = OverlapParams.new()
+overlapParams.FilterType = Enum.RaycastFilterType.Exclude
+overlapParams.FilterDescendantsInstances = {workspace.Attackers}
+
+local stop = false
+
+local staminaExhaust = 2
+local exhaust
+
+local crushProc = 1
+local crush
+local crushed
+
+local critProc = 1
+local critical
+local criticaled
+
+local waitDuration = .1
+
+local function find()
+	local preDistance
+	local closestPlayer
+	
+	-- compares the distance from the enemy to every player and returns the closest player and their distance
+	for index, player in ipairs(game.Players:GetPlayers()) do
+		if not player.Character then continue end
+		local distance = (player.Character.HumanoidRootPart.Position - rootPart.Position).Magnitude
+		if distance > 20 then continue end
+		if not preDistance then preDistance = distance; closestPlayer = player end
+		if distance < preDistance then preDistance = distance; closestPlayer = player end
+	end
+
+	if not closestPlayer then return end
+	
+	-- offloads calculations to the nearest player
+	if rootPart:GetNetworkOwner() ~= closestPlayer then rootPart:SetNetworkOwner(closestPlayer) end
+	return closestPlayer.Character.HumanoidRootPart.Position, preDistance
+end
+
+local function create()
+	local endPosition, distance = find()
+	if not endPosition then return nil end
+	
+	-- creates a path to the target player
+	path:ComputeAsync(rootPart.Position, endPosition)
+
+	return distance
+end
+
+local function move(success)
+	-- moves the attack mob along the waypoints with the goal of reaching the target
+	if success and path.Status == Enum.PathStatus.Success and not stop then
+		for _, waypoint in path:GetWaypoints() do
+			humanoid:MoveTo(waypoint.Position)
+		end
+	end
+end
+
+local function replenish()
+	exhaust:Play()
+	
+	-- attacker slowly regains stamina
+	while true do
+		task.wait(.2)
+		local stamina, maxStamina, gain = attacker:GetAttribute("Stamina"), attacker:GetAttribute("MaxStamina"), 1
+		if stamina + gain > maxStamina then 
+			stamina = maxStamina break
+		else stamina = stamina + gain end
+		attacker:SetAttribute("Stamina", stamina)
+	end
+
+	exhaust:Stop()
+end
+
+local function attack(func)
+	local hits = workspace:GetPartsInPart(hitbox, overlapParams)
+	for _, hit in ipairs(hits) do
+		local character = hit.Parent
+		local playerHumanoid = character:FindFirstChild("Humanoid")
+		
+		-- checks if a player character's part is within the attackers hitbox to then run the variable function
+		if playerHumanoid then
+			func(character, playerHumanoid.Animator, character.HumanoidRootPart)
+			break
+		end
+	end
+end
+
+local function strategize(distance)
+	if distance then
+		-- based on the distance the attacker behaves differently
+		
+		-- 15 studs over but also under 20 studs (see find() function) in distance the attacker runs towards their target
+		if distance > 15 then
+			if walk.IsPlaying then walk:Stop() end
+			if not run.IsPlaying then humanoid.WalkSpeed = 14; run:Play(); stop = false end
+			
+		-- under or 15 and over or 3 the enemy is walking
+		elseif distance <= 15 and distance >= 3 then
+			if run.IsPlaying then humanoid.WalkSpeed = 10; run:Stop() end
+			if not walk.IsPlaying then walk:Play(); stop = false end
+			
+		-- when the attack mob is less than 3 studs away from their target, it stops moving and attacks the player
+		elseif distance < 3 then
+			if walk.IsPlaying then walk:Stop(); stop = true end
+
+			local stamina = attacker:GetAttribute("Stamina")
+			
+			-- if the critical procs it checks if the player is in range if it is the critical attack will be played
+			if critProc == 3 then 
+				-- resets critical proc and increments crush proc
+				critProc = 1; crushProc += 1
+				-- requires at least 4 stamina
+				if stamina >= 4 then
+					attack(function(character, playerAnimator, playerRootPart)	
+						-- in case the player blocks the attack deals no damage
+						critical:Play(); if character:GetAttribute("Blocked") then return end
+						-- plays a response animation to the critical for the player
+						playerAnimator:LoadAnimation(criticaled):Play(); task.wait(.45)
+						
+						-- exhausts stamina
+						attacker:SetAttribute("Stamina", math.max(0, stamina - staminaExhaust * 2))
+
+						local rootAttachment = playerRootPart.RootAttachment
+						
+						-- greatly pushes the player into the direction, the attacker is facing
+						local linearVelocity = Instance.new("LinearVelocity")
+						linearVelocity.Attachment0 = rootAttachment
+						linearVelocity.MaxForce = math.huge
+						linearVelocity.VectorVelocity = rootPart.CFrame.LookVector * 30
+						linearVelocity.Parent = rootAttachment
+						
+						-- stops the push
+						game.Debris:AddItem(linearVelocity, .55)
+						
+						-- damages
+						local health, damage = character:GetAttribute("Health"), attacker:GetAttribute("Damage") * 2
+						character:SetAttribute("Health", health - damage)
+					end)
+
+					task.wait(.65); return
+				end
+			end
+			
+			if crushProc == 3 then 
+				crushProc = 1 
+				if stamina >= 6 then
+					attack(function(character, playerAnimator, playerRootPart)	
+						attacker:SetAttribute("Stamina", math.max(0, stamina - staminaExhaust * 3))
+						
+						-- makes the target unable to move
+						playerRootPart.CFrame = CFrame.new(playerRootPart.Position, rootPart.Position)
+						playerRootPart.Anchored = true
+						task.delay(4.1, function() 
+							playerRootPart.Anchored = false 
+						end)
+						
+						crushProc = 0; crush:Play() 
+						playerAnimator:LoadAnimation(crushed):Play(); task.wait(.9)
+
+						local health, damage = character:GetAttribute("Health"), attacker:GetAttribute("Damage") * 5
+						character:SetAttribute("Health", health - damage); task.wait(.9)
+					end)
+				end
+			end
+
+			if stamina >= 2 then
+				-- chooses either the left or right punch in a ping pong pattern
+				local punch = punches[critProc]
+				punch.Punch:Play(); task.wait(.45)
+
+				attacker:SetAttribute("Stamina", math.max(0, stamina - staminaExhaust))
+
+				attack(function(character, playerAnimator, playerRootPart)
+					critProc += 1
+				
+					if character:GetAttribute("Blocked") then return end
+
+					playerAnimator:LoadAnimation(punch.Punched):Play()
+
+					local health, damage = character:GetAttribute("Health"), attacker:GetAttribute("Damage")
+					character:SetAttribute("Health", health - damage)
+
+					playerRootPart.Anchored = true		
+					task.delay(.5, function() 
+						playerRootPart.Anchored = false 
+					end)
+				end)
+
+				task.wait(.15)
+			else
+				-- once the attack mob has insufficient stamina for any attack (under 2 stamina) it will replenish
+				replenish()
+			end
+		end
+	end
+end
+
+local function tolerance(currentPos, targetPos, waitDuration)
+	-- when the mob reaches its respawn coordinate with a tolerance in position delta then true is returned
+	local tolerance = humanoid.WalkSpeed / (1 / waitDuration)
+	if math.abs(currentPos.X - targetPos.X) < tolerance then
+		if  math.abs(currentPos.Z - targetPos.Z) < tolerance then 
+			return true 
+		end
+	end
+end
+
+function module.initiate(mob)
+	-- updates crucial variables when an attacker registers a target
+	attacker = mob
+	humanoid = attacker.Humanoid
+	animator = humanoid.Animator
+	rootPart = attacker.HumanoidRootPart
+	hitbox = attacker.Hitbox
+	
+	walk = animator:LoadAnimation(attacker.Walk)
+	run = animator:LoadAnimation(attacker.Run)
+
+	punches = {
+		{
+			Punch = humanoid.Animator:LoadAnimation(attacker.RPunch),
+			Punched = attacker.RPunch.RPunched
+		};
+		{
+			Punch = humanoid.Animator:LoadAnimation(attacker.LPunch),
+			Punched = attacker.LPunch.LPunched
+		}
+	} 
+	
+	exhaust = animator:LoadAnimation(attacker.Exhaust)
+
+	crush = animator:LoadAnimation(attacker.Crush)
+	crushed = attacker.Crush.Crushed
+	
+	critical = animator:LoadAnimation(attacker.Critical)
+	criticaled = attacker.Critical.Criticaled
+	
+	while true do
+		task.wait(.1)
+		local success, distance = pcall(create) -- returns the nearest player's distance
+		
+		-- resets the attacker when no target is within range
+		if not distance or typeof(distance) == "string" then
+			if run.IsPlaying then
+				local spawnPos = attacker:GetAttribute("RespawnCFrame").Position -- retrieves attacker's spawn coordinates
+				
+				run:Stop(); walk:Play(); humanoid.WalkSpeed = 10
+				attacker.Humanoid:MoveTo(spawnPos) -- walks to its default position
+				while not tolerance(rootPart.Position, spawnPos, waitDuration) do
+					task.wait(waitDuration) -- waits til spawn position is reached
+				end
+				walk:Stop(); replenish() -- stops and rests at its origin
+				
+				rootPart:SetNetworkOwner(nil) -- takes away player ownership
+				
+				return true -- exits the while loop
+			end
+			
+			continue
+		end
+
+		strategize(distance) -- runs behaviour depending on distance
+
+		move(success) -- moves towards the target
+	end
+end
+
+return module
